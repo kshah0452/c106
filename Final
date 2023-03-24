@@ -43,13 +43,11 @@ class Metropolis:
         s_c025 = np.percentile(self.samples, 2.5)
         s_c975 = np.percentile(self.samples, 97.5)
 
-        # Return summary statistics as a dictionary
         return {'mean': mean, 'c025': s_c025, 'c975': s_c975}
 
 
 class SignalDetection:
-    def __init__(self, hits, misses, false_alarms, correct_rejections):
-        self.hits = hits
+    def __init__(self, hits, misses, false_alarms, correct_rejections):        self.hits = hits
         self.misses = misses
         self.false_alarms = false_alarms
         self.correct_rejections = correct_rejections
