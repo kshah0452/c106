@@ -1,0 +1,249 @@
+import scipy.stats
+import matplotlib.pyplot as plt
+import unittest
+import numpy as np
+
+
+class Metropolis:
+    def __init__(self, logTarget, initialState):
+        self.logTarget = logTarget
+        self.State = initialState
+        self.samples = []
+        self.sd = 1
+
+    def __accept(self, proposal):
+        Prob_accept = min(0, self.logTarget(proposal) - self.logTarget(self.State))
+        if np.log(np.random.uniform()) < Prob_accept:
+            self.State = proposal
+            return True
+        else:
+            return False
+
+    def adapt(self, blockLengths):
+        for k in blockLengths:
+            acceptance = 0
+            for n in range(k):
+                proposal = np.random.normal(loc=self.State, scale=self.sd)
+                if self.__accept(proposal):
+                    acceptance += 1
+            accepted_rate = acceptance / n
+            self.sd = self.sd * (accepted_rate / 0.4) ** 1.1
+        return self
+
+    def sample(self, nSamples):
+        for n in range(nSamples):
+            proposal = np.random.normal(loc=self.State, scale=self.sd)
+            self.__accept(proposal)
+            self.samples.append(self.State)
+        return self
+
+    def summary(self):
+        samples = np.array(self.samples)
+        mean = np.mean(self.samples)
+        s_c025 = np.percentile(self.samples, 2.5)
+        s_c975 = np.percentile(self.samples, 97.5)
+
+        # Return summary statistics as a dictionary
+        return {'mean': mean, 'c025': s_c025, 'c975': s_c975}
+
+
+class SignalDetection:
+    def __init__(self, hits, misses, false_alarms, correct_rejections):
+        self.hits = hits
+        self.misses = misses
+        self.false_alarms = false_alarms
+        self.correct_rejections = correct_rejections
+
+    def h_rate(self):
+        return self.hits / (self.hits + self.misses)
+
+    def f_alarm(self):
+        return self.false_alarms / (self.false_alarms + self.correct_rejections)
+
+    def d_prime(self):
+        return scipy.stats.norm.ppf(self.h_rate()) - scipy.stats.norm.ppf(self.f_alarm())
+
+    def criterion(self):
+        return -0.5 * (scipy.stats.norm.ppf(self.h_rate()) + scipy.stats.norm.ppf(self.f_alarm()))
+
+    def __add__(self, other):
+        return SignalDetection(
+            self.hits + other.hits,
+            self.misses + other.misses,
+            self.false_alarms + other.false_alarms,
+            self.correct_rejections + other.correct_rejections
+        )
+
+    def __mul__(self, scalar):
+        return SignalDetection(
+            self.hits * scalar,
+            self.misses * scalar,
+            self.false_alarms * scalar,
+            self.correct_rejections * scalar
+        )
+
+    @staticmethod
+    def simulate(dprime, criteriaList, signalCount, noiseCount):
+        sdtList = []
+        for i in range(len(criteriaList)):
+            k = criteriaList[i] + (dprime / 2)
+            hr = 1 - scipy.stats.norm.cdf(k - dprime)
+            fa = 1 - scipy.stats.norm.cdf(k)
+            hits = np.random.binomial(signalCount, hr)
+            misses = signalCount - hits
+            false_alarms = np.random.binomial(noiseCount, fa)
+            criteria = noiseCount - false_alarms
+            print(hits, misses, false_alarms, criteria)
+            new_sig = SignalDetection(hits, misses, false_alarms, criteria)
+            sdtList.append(new_sig)
+        return sdtList
+
+    def plot_sdt(self):
+        x = np.linspace(-4, 4, 1000)
+        y_Noise = scipy.stats.norm.pdf(x, loc=0, scale=1)
+        y_Signal = scipy.stats.norm.pdf(x, loc=self.d_prime, scale=1)
+        c = self.d_prime / 2
+        Noisetop_y = np.max(y_Noise)
+        Noisestop_x = x[np.argmax(y_Noise)]
+        Signaltop_y = np.max(y_Signal)
+        Signaltop_x = x[np.argmax(y_Signal)]
+        plt.plot(x, y_Noise, label="Noise")
+        plt.plot(x, y_Signal, label="Signal")
+        plt.axvline((self.d_prime / 2) + c, label='threshold', color='k', linestyle='--')
+        plt.plot([Noisestop_x, Signaltop_x], [Noisetop_y, Signaltop_y], label="d'", linestyle='-')
+        plt.ylim(ymin=0)
+        plt.xlabel('Decision Variable')
+        plt.ylabel('Probability')
+        plt.title('Signal detection theory')
+        plt.legend()
+        plt.show()
+
+    @staticmethod
+    def plot_roc(sdtList):
+        plt.figure()
+        plt.xlim([0, 1])
+        plt.ylim([0, 1])
+        plt.xlabel("False Alarm Rate")
+        plt.ylabel("Hit Rate")
+        plt.title("Receiver Operating Characteristic Curve")
+        if isinstance(sdtList, list):
+            for i in range(len(sdtList)):
+                sdt = sdtList[i]
+                plt.plot(sdt.f_alarm(), sdt.h_rate(), 'o', color='black')
+        x, y = np.linspace(0, 1, 100), np.linspace(0, 1, 100)
+        plt.plot(x, y, '--', color='black')
+        plt.grid()
+
+    @staticmethod
+    def rocCurve(falseAlarmRate, a):
+        return scipy.stats.norm.cdf(a + scipy.stats.norm.ppf(falseAlarmRate))
+
+    def nLogLikelihood(self, hit_rate, false_alarm_rate):
+        return -((self.hits * np.log(hit_rate)) +
+        (self.misses * np.log(1-hit_rate)) +
+        (self.false_alarms * np.log(false_alarm_rate)) +
+        (self.correct_rejections * np.log(1-false_alarm_rate)))
+
+    @staticmethod
+    def rocLoss(a, sdtList):
+        tloss = 0
+        for sdt in sdtList:
+            phr = sdt.rocCurve(sdt.f_alarm(), a)
+            lsum = sdt.nLogLikelihood(phr, sdt.f_alarm())
+            tloss += lsum
+        return tloss
+
+
+    @staticmethod
+    def fit_roc(sdtList):
+        SignalDetection.plot_roc(sdtList)
+        a = 0
+        mini = scipy.optimize.minimize(fun = SignalDetection.rocLoss, x0 = a, method = 'BFGS', args = (sdtList))
+        totalloss = []
+        for i in range(0,100,1):
+            totalloss.append((SignalDetection.rocCurve(i/100, float(mini.x))))
+        plt.plot(np.linspace(0,1,100), totalloss, '-', color = 'r')
+        aHat = mini.x
+        return float(aHat)
+
+
+
+sdtList = SignalDetection.simulate(1, [-1, 0, 1], 1e5, 1e5)
+SignalDetection.fit_roc(sdtList)
+plt.show()
+
+
+def fit_roc_bayesian(sdtList):
+
+    # Define the log-likelihood function to optimize
+    def loglik(a):
+        return -SignalDetection.rocLoss(a, sdtList) + scipy.stats.norm.logpdf(a, loc = 0, scale = 10)
+
+    # Create a Metropolis sampler object and adapt it to the target distribution
+    sampler = Metropolis(logTarget = loglik, initialState = 0)
+    sampler = sampler.adapt(blockLengths = [2000]*3)
+
+    # Sample from the target distribution
+    sampler = sampler.sample(nSamples = 4000)
+
+    # Compute the summary statistics of the samples
+    result  = sampler.summary()
+
+    # Print the estimated value of the parameter a and its credible interval
+    print(f"Estimated a: {result['mean']} ({result['c025']}, {result['c975']})")
+
+    # Create a mosaic plot with four subplots
+    fig, axes = plt.subplot_mosaic(
+        [["ROC curve", "ROC curve", "traceplot"],
+         ["ROC curve", "ROC curve", "histogram"]],
+        constrained_layout = True
+    )
+
+    # Plot the ROC curve of the SDT data
+    plt.sca(axes["ROC curve"])
+    SignalDetection.plot_roc(sdtList = sdtList)
+
+    # Compute the ROC curve for the estimated value of a and plot it
+    xaxis = np.arange(start = 0.00,
+                      stop  = 1.00,
+                      step  = 0.01)
+
+    plt.plot(xaxis, SignalDetection.rocCurve(xaxis, result['mean']), 'r-')
+
+    # Shade the area between the lower and upper bounds of the credible interval
+    plt.fill_between(x  = xaxis,
+                     y1 = SignalDetection.rocCurve(xaxis, result['c025']),
+                     y2 = SignalDetection.rocCurve(xaxis, result['c975']),
+                     facecolor = 'r',
+                     alpha     = 0.1)
+
+    # Plot the trace of the sampler
+    plt.sca(axes["traceplot"])
+    plt.plot(sampler.samples)
+    plt.xlabel('iteration')
+    plt.ylabel('a')
+    plt.title('Trace plot')
+
+    # Plot the histogram of the samples
+    plt.sca(axes["histogram"])
+    plt.hist(sampler.samples,
+             bins    = 51,
+             density = True)
+    plt.xlabel('a')
+    plt.ylabel('density')
+    plt.title('Histogram')
+
+    # Show the plot
+    plt.show()
+
+# Define the number of SDT trials and generate a simulated dataset
+sdtList = SignalDetection.simulate(dprime       = 1,
+                                   criteriaList = [-1, 0, 1],
+                                   signalCount  = 40,
+                                   noiseCount   = 40)
+
+# Fit the ROC curve to the simulated dataset
+fit_roc_bayesian(sdtList)
+
+if __name__ == '__main__':
+    unittest.main()
